@@ -87,7 +87,7 @@ func (h *HTTPJudge) Judge(ctx context.Context, state State) (Answers, error) {
 		return Answers{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Answers{}, fmt.Errorf("typesafe: %s", resp.Status)
+		return Answers{}, fmt.Errorf("typesafe: %s%s", resp.Status, blockedHint(raw))
 	}
 	return decodeAnswers(raw, state.Mode)
 }
@@ -109,7 +109,18 @@ func RequestBody(state State, model string) ([]byte, error) {
 		"state":     state,
 		"questions": questionsFor(state.Mode),
 	}
-	return json.Marshal(payload)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return defangWAF(body), nil
+}
+
+func blockedHint(raw []byte) string {
+	if bytes.Contains(raw, []byte("Sorry, you have been blocked")) {
+		return ": cloudflare blocked the request body"
+	}
+	return ""
 }
 
 func decodeAnswers(raw []byte, mode Mode) (Answers, error) {

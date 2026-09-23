@@ -146,6 +146,20 @@ func TestDecodeLooseAnswers(t *testing.T) {
 	}
 }
 
+func TestHTTPJudgeNamesCloudflareBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<html><title>Attention Required! | Cloudflare</title><h1>Sorry, you have been blocked</h1></html>`))
+	}))
+	defer srv.Close()
+	j := NewHTTPJudge("test-key")
+	j.URL = srv.URL
+	_, err := j.Judge(context.Background(), State{Screen: "go test"})
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "cloudflare blocked the request body") {
+		t.Fatalf("err %v", err)
+	}
+}
+
 func TestHTTPJudgeRejectsUnauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no", http.StatusUnauthorized)
