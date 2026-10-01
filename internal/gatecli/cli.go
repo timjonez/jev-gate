@@ -76,6 +76,7 @@ func (a *App) rootCmd() *cobra.Command {
 		model          string
 		minAppropriate float64
 		maxNeedsHuman  float64
+		maxJudges      int
 	)
 	root := &cobra.Command{
 		Use:   "gate",
@@ -94,6 +95,9 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if minAppropriate < 0 || minAppropriate > 1 || maxNeedsHuman < 0 || maxNeedsHuman > 1 {
 				return fmt.Errorf("thresholds must be between 0 and 1")
+			}
+			if maxJudges < 1 {
+				return fmt.Errorf("--max-judges-per-minute must be at least 1")
 			}
 			c, err := a.client()
 			if err != nil {
@@ -128,6 +132,8 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 					Mode:       mode,
 					Thresholds: th,
 					Now:        a.now,
+
+					MaxJudgesPerMinute: maxJudges,
 				},
 				Status: func(msg string) {
 					if a.Quiet {
@@ -167,6 +173,7 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 	root.Flags().StringVar(&model, "model", "jev-latest", "TypeSafe model")
 	root.Flags().Float64Var(&minAppropriate, "min-appropriate", 0.85, "minimum Jev probability that the command is an ordinary step (strict mode)")
 	root.Flags().Float64Var(&maxNeedsHuman, "max-needs-human", 0.20, "maximum Jev probability of a risk that should stay on screen")
+	root.Flags().IntVar(&maxJudges, "max-judges-per-minute", gate.DefaultMaxJudgesPerMinute, "cap on TypeSafe requests per minute across all panes")
 	root.AddCommand(a.versionCmd())
 	return root
 }

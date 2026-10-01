@@ -18,6 +18,14 @@ type Card struct {
 	Tail     string
 }
 
+// ID identifies the card by what it asks, not by the screen around it.
+// Spinners, timers, and output elsewhere on the pane change the screen
+// fingerprint while the card itself stays the same.
+func (c Card) ID() string {
+	sum := sha256.Sum256([]byte(c.Key + "\x00" + c.Label + "\x00" + c.Proposed))
+	return hex.EncodeToString(sum[:])
+}
+
 var optionLine = regexp.MustCompile(`^\s*[❯›>●▶]?\s*(\d)\s*[.)]\s+(\S.*?)\s*$`)
 
 // ParseCard reports whether the tail of screen is a permission card with a

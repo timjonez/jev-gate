@@ -140,3 +140,44 @@ func TestFormatDecision(t *testing.T) {
 		t.Fatalf("held format %q", held)
 	}
 }
+
+func TestMaxJudgesPerMinuteFlag(t *testing.T) {
+	app, _, errb := newTestApp(t)
+	app.newJudge = func() (gate.Judge, error) { return stubJudge{}, nil }
+	var got gate.Options
+	app.runLoop = func(loop *gate.Loop) error {
+		got = loop.Opts
+		return nil
+	}
+	if code := app.Execute([]string{"--max-judges-per-minute", "5"}); code != 0 {
+		t.Fatalf("code err: %s", errb.String())
+	}
+	if got.MaxJudgesPerMinute != 5 {
+		t.Fatalf("max judges %d", got.MaxJudgesPerMinute)
+	}
+}
+
+func TestMaxJudgesPerMinuteDefaultsAndRejectsZero(t *testing.T) {
+	app, _, errb := newTestApp(t)
+	app.newJudge = func() (gate.Judge, error) { return stubJudge{}, nil }
+	var got gate.Options
+	app.runLoop = func(loop *gate.Loop) error {
+		got = loop.Opts
+		return nil
+	}
+	if code := app.Execute([]string{}); code != 0 {
+		t.Fatalf("code err: %s", errb.String())
+	}
+	if got.MaxJudgesPerMinute != gate.DefaultMaxJudgesPerMinute {
+		t.Fatalf("default max judges %d", got.MaxJudgesPerMinute)
+	}
+
+	app, _, errb = newTestApp(t)
+	app.newJudge = func() (gate.Judge, error) { return stubJudge{}, nil }
+	if code := app.Execute([]string{"--max-judges-per-minute", "0"}); code == 0 {
+		t.Fatal("expected zero cap to be rejected")
+	}
+	if !strings.Contains(errb.String(), "at least 1") {
+		t.Fatalf("stderr: %s", errb.String())
+	}
+}
