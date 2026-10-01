@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -343,5 +344,146 @@ func TestConsiderRetriesJudgeLater(t *testing.T) {
 	}
 	if j.calls != 2 || len(fc.keys) != 1 {
 		t.Fatalf("calls %d keys %+v", j.calls, fc.keys)
+	}
+}
+
+func churningCard(tick int) string {
+	return fmt.Sprintf("Monitor event %d: CI still running\n", tick) + claudeCard()
+}
+
+func cardFor(command string) string {
+	return "" +
+		"Bash command\n" +
+		"\n" +
+		"  " + command + "\n" +
+		"\n" +
+		"Do you want to proceed?\n" +
+		"❯ 1. Yes\n" +
+		"  2. No\n"
+}
+
+func TestConsiderJudgesHeldCardOnceWhileScreenChurns(t *testing.T) {
+	fc := &fakeClient{}
+	ans := allowAnswers()
+	ans.NeedsHuman = 0.9
+	j := &scriptJudge{ans: ans}
+	l, got := newLoop(fc, j)
+	a := blocked("worker")
+	for tick := 0; tick < 50; tick++ {
+		fc.text = churningCard(tick)
+		if err := l.consider(context.Background(), a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if j.calls != 1 {
+		t.Fatalf("judge calls %d, want 1", j.calls)
+	}
+	if len(*got) != 1 || (*got)[0].Action != "hold" {
+		t.Fatalf("decisions %+v", *got)
+	}
+}
+
+func TestConsiderAllowsWhenOnlyChromeChangesBeforeAllow(t *testing.T) {
+	fc := &fakeClient{seq: []string{churningCard(1), churningCard(2)}}
+	j := &scriptJudge{ans: allowAnswers()}
+	l, got := newLoop(fc, j)
+	if err := l.consider(context.Background(), blocked("worker")); err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.keys) != 1 || fc.keys[0][1] != "1" {
+		t.Fatalf("keys %+v", fc.keys)
+	}
+	if (*got)[0].Action != "allow" {
+		t.Fatalf("decisions %+v", *got)
+	}
+}
+
+func TestConsiderDoesNotAllowWhenCardChangesBeforeAllow(t *testing.T) {
+	fc := &fakeClient{seq: []string{cardFor("go test ./..."), cardFor("rm -rf /tmp/x")}}
+	j := &scriptJudge{ans: allowAnswers()}
+	l, got := newLoop(fc, j)
+	if err := l.consider(context.Background(), blocked("worker")); err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.keys) != 0 {
+		t.Fatalf("keys %+v", fc.keys)
+	}
+	if (*got)[0].Action != "hold" || (*got)[0].Reason != "screen changed before allow" {
+		t.Fatalf("decisions %+v", *got)
+	}
+}
+
+func TestConsiderJudgesANewCardOnTheSamePane(t *testing.T) {
+	fc := &fakeClient{text: cardFor("go test ./...")}
+	ans := allowAnswers()
+	ans.NeedsHuman = 0.9
+	j := &scriptJudge{ans: ans}
+	l, _ := newLoop(fc, j)
+	a := blocked("worker")
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	fc.text = cardFor("go vet ./...")
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if j.calls != 2 {
+		t.Fatalf("judge calls %d, want 2", j.calls)
+	}
+}
+
+func TestConsiderCapsJudgesPerMinute(t *testing.T) {
+	fc := &fakeClient{}
+	ans := allowAnswers()
+	ans.NeedsHuman = 0.9
+	j := &scriptJudge{ans: ans}
+	l, _ := newLoop(fc, j)
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	l.Opts.Now = func() time.Time { return now }
+	l.Opts.MaxJudgesPerMinute = 3
+	var status []string
+	l.Status = func(s string) { status = append(status, s) }
+	a := blocked("worker")
+	for i := 0; i < 10; i++ {
+		fc.text = cardFor(fmt.Sprintf("echo %d", i))
+		if err := l.consider(context.Background(), a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if j.calls != 3 {
+		t.Fatalf("judge calls %d, want 3", j.calls)
+	}
+	budgetLines := 0
+	for _, s := range status {
+		if strings.Contains(s, "judge budget reached") {
+			budgetLines++
+		}
+	}
+	if budgetLines != 1 {
+		t.Fatalf("budget status lines %d in %q", budgetLines, status)
+	}
+
+	now = now.Add(61 * time.Second)
+	fc.text = cardFor("echo later")
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if j.calls != 4 {
+		t.Fatalf("judge calls after window %d, want 4", j.calls)
+	}
+}
+
+func TestCardIDIgnoresScreenChrome(t *testing.T) {
+	a, okA := ParseCard(churningCard(1))
+	b, okB := ParseCard(churningCard(2))
+	c, okC := ParseCard(cardFor("go vet ./..."))
+	if !okA || !okB || !okC {
+		t.Fatal("expected cards")
+	}
+	if a.ID() != b.ID() {
+		t.Fatal("same card with different chrome has different ids")
+	}
+	if a.ID() == c.ID() {
+		t.Fatal("different commands share an id")
 	}
 }

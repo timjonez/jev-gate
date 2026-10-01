@@ -24,8 +24,15 @@ type Options struct {
 	Thresholds     Thresholds
 	Settle         time.Duration
 	ReconcileEvery time.Duration
-	Now            func() time.Time
+	// MaxJudgesPerMinute caps TypeSafe requests across all panes so a card
+	// that keeps looking new cannot spend the key unattended. Zero means
+	// DefaultMaxJudgesPerMinute.
+	MaxJudgesPerMinute int
+	Now                func() time.Time
 }
+
+// DefaultMaxJudgesPerMinute is well above a busy herd's real card rate.
+const DefaultMaxJudgesPerMinute = 30
 
 // Decision is one judged card, or a blocked screen that is not a command card.
 type Decision struct {
@@ -62,12 +69,15 @@ type Loop struct {
 	mem        map[string]memory
 	subscribed map[string]struct{}
 	reconnect  chan struct{}
+	judgedAt   []time.Time
+	overBudget bool
 }
 
 type memory struct {
 	status  string
 	seq     uint64
 	hash    string
+	card    string
 	settled bool
 	retryAt time.Time
 }
@@ -94,6 +104,9 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 	if l.Opts.Now == nil {
 		l.Opts.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if l.Opts.MaxJudgesPerMinute <= 0 {
+		l.Opts.MaxJudgesPerMinute = DefaultMaxJudgesPerMinute
 	}
 	if l.Opts.SelfPane == "" {
 		l.Opts.SelfPane = os.Getenv("HERDR_PANE_ID")
@@ -314,6 +327,17 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 	}
 
 	card, ok := ParseCard(screen)
+	cardID := ""
+	if ok {
+		cardID = card.ID()
+		if had && prev.card == cardID && prev.settled {
+			l.mem[a.PaneID] = memory{status: a.Status, seq: a.StateChangeSeq, hash: hash, card: cardID, settled: true}
+			return nil
+		}
+		if had && prev.card == cardID && !prev.retryAt.IsZero() && now.Before(prev.retryAt) {
+			return nil
+		}
+	}
 	base := Decision{
 		Agent:  a.Agent,
 		Name:   a.Name,
@@ -337,12 +361,20 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 		Screen: screen,
 		Mode:   l.Opts.Mode,
 	}
+	if !l.takeJudgeBudget(now) {
+		l.mem[a.PaneID] = memory{
+			status: a.Status, seq: a.StateChangeSeq, hash: hash, card: cardID,
+			retryAt: now.Add(retryAfter),
+		}
+		return nil
+	}
 	answers, err := l.Judge.Judge(ctx, state)
 	if err != nil {
 		l.mem[a.PaneID] = memory{
 			status:  a.Status,
 			seq:     a.StateChangeSeq,
 			hash:    hash,
+			card:    cardID,
 			retryAt: now.Add(retryAfter),
 		}
 		base.Action = "error"
@@ -372,7 +404,7 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 		again, err := l.readScreen(ctx, a)
 		if err != nil {
 			l.mem[a.PaneID] = memory{
-				status: a.Status, seq: a.StateChangeSeq, hash: hash,
+				status: a.Status, seq: a.StateChangeSeq, hash: hash, card: cardID,
 				retryAt: now.Add(retryAfter),
 			}
 			base.Action = "error"
@@ -380,7 +412,7 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 			return l.emit(ctx, base)
 		}
 		againCard, againOK := ParseCard(again)
-		if fingerprint(again) != hash || !againOK || againCard.Key != card.Key {
+		if !againOK || againCard.ID() != cardID {
 			l.mem[a.PaneID] = memory{status: a.Status, seq: a.StateChangeSeq, hash: fingerprint(again)}
 			base.Action = "hold"
 			base.Reason = "screen changed before allow"
@@ -393,7 +425,7 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 		}
 		if err := l.Client.SendKeys(ctx, target, []string{card.Key}); err != nil {
 			l.mem[a.PaneID] = memory{
-				status: a.Status, seq: a.StateChangeSeq, hash: hash,
+				status: a.Status, seq: a.StateChangeSeq, hash: hash, card: cardID,
 				retryAt: now.Add(retryAfter),
 			}
 			base.Action = "error"
@@ -403,8 +435,38 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 		}
 	}
 
-	l.mem[a.PaneID] = memory{status: a.Status, seq: a.StateChangeSeq, hash: hash, settled: true}
+	l.mem[a.PaneID] = memory{status: a.Status, seq: a.StateChangeSeq, hash: hash, card: cardID, settled: true}
 	return l.emit(ctx, base)
+}
+
+// takeJudgeBudget records a judge request at now, or reports false when the
+// last minute already used MaxJudgesPerMinute. Callers hold l.mu.
+func (l *Loop) takeJudgeBudget(now time.Time) bool {
+	limit := l.Opts.MaxJudgesPerMinute
+	if limit <= 0 {
+		limit = DefaultMaxJudgesPerMinute
+	}
+	cutoff := now.Add(-time.Minute)
+	kept := l.judgedAt[:0]
+	for _, t := range l.judgedAt {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	l.judgedAt = kept
+	if len(l.judgedAt) >= limit {
+		if !l.overBudget {
+			l.statusf("judge budget reached (%d per minute); pausing judgments", limit)
+		}
+		l.overBudget = true
+		return false
+	}
+	if l.overBudget {
+		l.statusf("judge budget available again")
+	}
+	l.overBudget = false
+	l.judgedAt = append(l.judgedAt, now)
+	return true
 }
 
 func (l *Loop) readScreen(ctx context.Context, a herdrx.Agent) (string, error) {

@@ -20,6 +20,7 @@ Requires Go 1.25+ and a running Herdr server.
 gate [--dry-run] [--loose] [--notify] [--ignore TARGET]...
      [--model jev-latest]
      [--min-appropriate 0.85] [--max-needs-human 0.20]
+     [--max-judges-per-minute 30]
      [--socket PATH] [--session NAME] [--json] [--quiet]
 gate version
 ```
@@ -38,6 +39,8 @@ gate --loose                  # allow almost everything; leave the risky cards
 ```
 
 `--notify` toasts a command left for you. It does not toast allows.
+
+Each card is judged once per pane, keyed on the card's command and options rather than the whole screen, so spinners or output elsewhere on the pane do not trigger another TypeSafe request. `--max-judges-per-minute` caps requests across all panes as a backstop; when the cap is hit, cards wait and are retried once the minute clears.
 
 ## How it connects
 
