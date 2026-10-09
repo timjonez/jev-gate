@@ -102,7 +102,7 @@ func TestDecideLoose(t *testing.T) {
 				return a
 			}(),
 			action: "hold",
-			reason: "left for you: reads a secret",
+			reason: "left for you: reads a secret 0.91",
 		},
 		{
 			name: "delete outside the worktree stays on screen",
@@ -112,7 +112,7 @@ func TestDecideLoose(t *testing.T) {
 				return a
 			}(),
 			action: "hold",
-			reason: "left for you: deletes outside the worktree",
+			reason: "left for you: deletes outside the worktree 0.80",
 		},
 		{
 			name: "terraform apply stays on screen",
@@ -122,7 +122,7 @@ func TestDecideLoose(t *testing.T) {
 				return a
 			}(),
 			action: "hold",
-			reason: "left for you: infrastructure apply or destroy",
+			reason: "left for you: infrastructure apply or destroy 0.77",
 		},
 		{
 			name: "several risks are named and the card is not refused",
@@ -133,12 +133,22 @@ func TestDecideLoose(t *testing.T) {
 				return a
 			}(),
 			action: "hold",
-			reason: "left for you: reads a secret; infrastructure apply or destroy",
+			reason: "left for you: reads a secret 0.90; infrastructure apply or destroy 0.60",
 		},
 		{
 			name:   "exact risk boundary allows",
-			ans:    func() Answers { a := allowAnswers(); a.ReadsSecret = th.MaxNeedsHuman; return a }(),
+			ans:    func() Answers { a := allowAnswers(); a.ReadsSecret = th.MaxLooseRisk; return a }(),
 			action: "allow",
+		},
+		{
+			name: "a mild secret hunch above the strict bar is allowed",
+			ans: func() Answers {
+				a := allowAnswers()
+				a.ReadsSecret = 0.35
+				return a
+			}(),
+			action: "allow",
+			reason: "allowed under the loose policy",
 		},
 		{
 			name: "question is left alone",
@@ -177,9 +187,28 @@ func TestDecideLoose(t *testing.T) {
 	}
 }
 
+func TestDecideLooseUsesItsOwnBarNotNeedsHuman(t *testing.T) {
+	th := DefaultThresholds()
+	th.MaxNeedsHuman = 0.9
+	th.MaxLooseRisk = 0.1
+	a := allowAnswers()
+	a.ReadsSecret = 0.2
+	if action, reason := Decide(a, th, ModeLoose); action != "hold" || reason != "left for you: reads a secret 0.20" {
+		t.Fatalf("got %s %q", action, reason)
+	}
+}
+
+func TestDecideFillsPartialThresholds(t *testing.T) {
+	a := allowAnswers()
+	a.ReadsSecret = 0.6
+	if action, _ := Decide(a, Thresholds{MaxNeedsHuman: 0.3}, ModeLoose); action != "hold" {
+		t.Fatalf("unset loose bar must fall back to the default, got %s", action)
+	}
+}
+
 func TestFillThresholdsKeepsExplicitValues(t *testing.T) {
-	got := fillThresholds(Thresholds{MinAppropriate: 0.5, MaxNeedsHuman: 0.1})
-	if got.MinAppropriate != 0.5 || got.MaxNeedsHuman != 0.1 {
+	got := fillThresholds(Thresholds{MinAppropriate: 0.5, MaxNeedsHuman: 0.1, MaxLooseRisk: 0.7})
+	if got.MinAppropriate != 0.5 || got.MaxNeedsHuman != 0.1 || got.MaxLooseRisk != 0.7 {
 		t.Fatalf("explicit fields changed: %+v", got)
 	}
 	if got.MinConfidence != DefaultThresholds().MinConfidence {

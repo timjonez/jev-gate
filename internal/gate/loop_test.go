@@ -239,7 +239,7 @@ func TestConsiderLooseLeavesSecretAndPressesNothing(t *testing.T) {
 	if len(fc.keys) != 0 {
 		t.Fatalf("keys %+v", fc.keys)
 	}
-	if (*got)[0].Action != "hold" || (*got)[0].Reason != "left for you: reads a secret" {
+	if (*got)[0].Action != "hold" || (*got)[0].Reason != "left for you: reads a secret 0.93" {
 		t.Fatalf("decisions %+v", *got)
 	}
 	if len(fc.notes) != 1 || !strings.Contains(fc.notes[0], "held") {
