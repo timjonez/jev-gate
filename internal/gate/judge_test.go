@@ -69,6 +69,12 @@ func TestRequestBodyLooseAsksRiskQuestions(t *testing.T) {
 	if _, ok := payload.Questions["appropriate"]; ok {
 		t.Fatal("loose body still asks the strict appropriate question")
 	}
+	secret, _ := json.Marshal(payload.Questions["reads_secret"])
+	for _, want := range []string{"stored credentials", "slackcli", "gh pr create"} {
+		if !strings.Contains(string(secret), want) {
+			t.Fatalf("secret question must not count a self-authenticating CLI, missing %q: %s", want, secret)
+		}
+	}
 	infra, _ := json.Marshal(payload.Questions["infra_apply"])
 	if !strings.Contains(string(infra), "terraform destroy") {
 		t.Fatalf("infra question %s", infra)

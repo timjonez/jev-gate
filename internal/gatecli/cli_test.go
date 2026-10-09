@@ -103,14 +103,36 @@ func TestLooseFlagWiresModeAndDoesNotStartTheLoop(t *testing.T) {
 		got = loop.Opts
 		return nil
 	}
-	if code := app.Execute([]string{"--loose", "--dry-run", "--notify", "--max-needs-human", "0.3"}); code != 0 {
+	if code := app.Execute([]string{"--loose", "--dry-run", "--notify", "--max-needs-human", "0.3", "--max-risk", "0.6"}); code != 0 {
 		t.Fatalf("code err: %s", errb.String())
 	}
 	if got.Mode != gate.ModeLoose || !got.DryRun || !got.NotifyHold {
 		t.Fatalf("opts %+v", got)
 	}
-	if got.Thresholds.MaxNeedsHuman != 0.3 {
+	if got.Thresholds.MaxNeedsHuman != 0.3 || got.Thresholds.MaxLooseRisk != 0.6 {
 		t.Fatalf("threshold %+v", got.Thresholds)
+	}
+}
+
+func TestLooseRiskDefaultsAndRejectsOutOfRange(t *testing.T) {
+	app, _, errb := newTestApp(t)
+	app.newJudge = func() (gate.Judge, error) { return stubJudge{}, nil }
+	var got gate.Options
+	app.runLoop = func(loop *gate.Loop) error {
+		got = loop.Opts
+		return nil
+	}
+	if code := app.Execute([]string{"--loose"}); code != 0 {
+		t.Fatalf("code err: %s", errb.String())
+	}
+	if got.Thresholds.MaxLooseRisk != gate.DefaultThresholds().MaxLooseRisk {
+		t.Fatalf("default loose bar %+v", got.Thresholds)
+	}
+	bad, _, _ := newTestApp(t)
+	bad.newJudge = func() (gate.Judge, error) { return stubJudge{}, nil }
+	bad.runLoop = func(*gate.Loop) error { return nil }
+	if code := bad.Execute([]string{"--loose", "--max-risk", "1.5"}); code == 0 {
+		t.Fatal("accepted --max-risk above 1")
 	}
 }
 

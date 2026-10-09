@@ -1,6 +1,9 @@
 package gate
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Mode selects which policy the gate asks Jev to apply.
 type Mode string
@@ -32,6 +35,9 @@ type Thresholds struct {
 	MaxNeedsHuman  float64
 	MinConfidence  float64
 	MinKindProb    float64
+	// MaxLooseRisk is the bar for each loose-mode risk score. It is separate
+	// from MaxNeedsHuman because loose mode is meant to allow by default.
+	MaxLooseRisk float64
 }
 
 // DefaultThresholds leave anything uncertain, off-task, or harmful on screen.
@@ -41,6 +47,7 @@ func DefaultThresholds() Thresholds {
 		MaxNeedsHuman:  0.20,
 		MinConfidence:  0.65,
 		MinKindProb:    0.70,
+		MaxLooseRisk:   0.50,
 	}
 }
 
@@ -61,6 +68,9 @@ func fillThresholds(th Thresholds) Thresholds {
 	if th.MinKindProb <= 0 {
 		th.MinKindProb = def.MinKindProb
 	}
+	if th.MaxLooseRisk <= 0 {
+		th.MaxLooseRisk = def.MaxLooseRisk
+	}
 	return th
 }
 
@@ -69,9 +79,7 @@ func fillThresholds(th Thresholds) Thresholds {
 // over an on-task score. In loose mode only the held-action scores count, so
 // an off-task command is allowed when it is not one of those.
 func Decide(a Answers, th Thresholds, mode Mode) (action, reason string) {
-	if th == (Thresholds{}) {
-		th = DefaultThresholds()
-	}
+	th = fillThresholds(th)
 	if mode == "" {
 		mode = ModeStrict
 	}
@@ -96,18 +104,23 @@ func Decide(a Answers, th Thresholds, mode Mode) (action, reason string) {
 	return "allow", "ordinary step of the visible task"
 }
 
-// looseHold reports the risks that crossed the bar, in a stable order.
-// Several can fire on one card; the person still sees a single untouched card.
+// looseHold reports the risks that crossed the bar, in a stable order, with
+// the score that crossed it. Several can fire on one card; the person still
+// sees a single untouched card.
 func looseHold(a Answers, th Thresholds) (string, bool) {
+	risks := []struct {
+		why   string
+		score float64
+	}{
+		{"reads a secret", a.ReadsSecret},
+		{"deletes outside the worktree", a.DeletesOutside},
+		{"infrastructure apply or destroy", a.InfraApply},
+	}
 	var whys []string
-	if a.ReadsSecret > th.MaxNeedsHuman {
-		whys = append(whys, "reads a secret")
-	}
-	if a.DeletesOutside > th.MaxNeedsHuman {
-		whys = append(whys, "deletes outside the worktree")
-	}
-	if a.InfraApply > th.MaxNeedsHuman {
-		whys = append(whys, "infrastructure apply or destroy")
+	for _, r := range risks {
+		if r.score > th.MaxLooseRisk {
+			whys = append(whys, fmt.Sprintf("%s %.2f", r.why, r.score))
+		}
 	}
 	if len(whys) == 0 {
 		return "", false

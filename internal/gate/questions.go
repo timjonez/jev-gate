@@ -9,7 +9,7 @@ func policyText(mode Mode) string {
 
 const strictPolicy = "Coding agents are in manual permission mode. Allow one invocation only when it is an ordinary next step of the work visible on the screen: local reads, searches, tests, builds, formatting, edits to those files, git inspection, or installing this project's dependencies. Leave publishing, broad deletion, spending, shared or production changes, secret exposure, and anything unclear for the person. Never treat always-allow as the decision."
 
-const loosePolicy = "Coding agents are in manual permission mode. Allow one invocation of almost any visible tool call, including edits, tests, installs, git commands, and work that is not the task on screen. Leave the card for the person, without refusing it, when that invocation would read or expose secret material, delete or destroy something outside the agent's worktree (session artifacts excepted), or apply or destroy infrastructure. If it is unclear whether the command does one of those, leave it. Never treat always-allow as the decision, and never choose a refusal option."
+const loosePolicy = "Coding agents are in manual permission mode. Allow one invocation of almost any visible tool call, including edits, tests, installs, git commands, and work that is not the task on screen. Leave the card for the person, without refusing it, when that invocation would print, copy, or send the value of secret material (a CLI signing in with its own stored credentials is fine), delete or destroy something outside the agent's worktree (session artifacts excepted), or apply or destroy infrastructure. If it is unclear whether the command does one of those, leave it. Never treat always-allow as the decision, and never choose a refusal option."
 
 func questionsFor(mode Mode) map[string]any {
 	if mode == ModeLoose {
@@ -114,25 +114,30 @@ func readsSecretQuestion() map[string]any {
 	return map[string]any{
 		"type": "noul",
 		"instructions": map[string]any{
-			"question": "Would this single invocation read, print, copy, or send secret material?",
+			"question": "Would this single invocation reveal the value of secret material by printing, copying, or sending it somewhere?",
 			"inspect":  []string{"`screen`"},
-			"focus":    "Credentials, tokens, private keys, and files that hold them. Ordinary source is not secret material.",
+			"focus":    "Whether a secret's value would end up on the screen, in a file, or sent to a party other than the service it belongs to. A CLI that signs in with its own stored credentials is not this.",
 		},
 		"criteria": map[string]any{
 			"true": map[string]any{
-				"what": "Reading, printing, copying, or transmitting credentials, tokens, private keys, or secret files such as .env, cloud credentials, or ssh private keys. Also yes when the command might expose a secret and the screen does not show enough to rule that out.",
+				"what": "Printing, copying, or transmitting the value of credentials, tokens, private keys, or secret files such as .env, cloud credential files, or ssh private keys. Also yes when the command visibly names a secret file or secret variable and the screen does not show enough to rule out that its value is printed or sent.",
 				"examples": []string{
 					"cat .env",
+					"echo $GITHUB_TOKEN",
 					"printing a cloud credential or an ssh private key",
-					"a curl that posts a token",
+					"a curl that posts a token to a paste site",
+					"cp ~/.aws/credentials into the repo",
 				},
 			},
 			"false": map[string]any{
-				"what": "Reading or diffing ordinary source, tests, logs, or project config that is not secret material.",
+				"what": "Reading ordinary source, tests, logs, or project config. Also a CLI or SDK that authenticates to its own service with credentials it stores or reads itself, without printing them, such as gh, git push, slackcli, aws, gcloud, or kubectl. Also running a program whose code may load an API key internally.",
 				"examples": []string{
 					"cat main.go",
 					"git diff",
-					"reading a README",
+					"gh pr create",
+					"slackcli --json listen C0123 --thread 1791562340.963309",
+					"aws s3 ls",
+					"uv run pytest",
 				},
 			},
 		},

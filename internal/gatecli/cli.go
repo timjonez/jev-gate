@@ -77,6 +77,7 @@ func (a *App) rootCmd() *cobra.Command {
 		minAppropriate float64
 		maxNeedsHuman  float64
 		maxJudges      int
+		maxRisk        float64
 	)
 	root := &cobra.Command{
 		Use:   "gate",
@@ -85,7 +86,7 @@ func (a *App) rootCmd() *cobra.Command {
 
 By default, allow once only when that invocation is an ordinary step of the visible task. Publishing, broad deletion, spending, shared-system changes, and secret exposure stay on screen.
 
---loose allows almost every single invocation, including work that is off the visible task. It still leaves the card on screen when the command would read or expose a secret, delete or destroy something outside the agent's worktree (session artifacts excepted), or apply or destroy infrastructure such as terraform apply or destroy. Unclear cases in that set stay on screen too.
+--loose allows almost every single invocation, including work that is off the visible task. It still leaves the card on screen when the command would print, copy, or send a secret's value (a CLI signing in with its own stored credentials is allowed), delete or destroy something outside the agent's worktree (session artifacts excepted), or apply or destroy infrastructure such as terraform apply or destroy. Unclear cases in that set stay on screen too.
 
 Held cards are left for you. gate never presses No, always-allow, or a session-wide option.
 
@@ -93,7 +94,7 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if minAppropriate < 0 || minAppropriate > 1 || maxNeedsHuman < 0 || maxNeedsHuman > 1 {
+			if minAppropriate < 0 || minAppropriate > 1 || maxNeedsHuman < 0 || maxNeedsHuman > 1 || maxRisk < 0 || maxRisk > 1 {
 				return fmt.Errorf("thresholds must be between 0 and 1")
 			}
 			if maxJudges < 1 {
@@ -120,6 +121,9 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 			}
 			if maxNeedsHuman > 0 {
 				th.MaxNeedsHuman = maxNeedsHuman
+			}
+			if maxRisk > 0 {
+				th.MaxLooseRisk = maxRisk
 			}
 			loop := &gate.Loop{
 				Client: c,
@@ -172,7 +176,8 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 	root.Flags().BoolVar(&loose, "loose", false, "allow almost every command; leave secrets, out-of-worktree deletes, and infrastructure apply or destroy on screen")
 	root.Flags().StringVar(&model, "model", "jev-latest", "TypeSafe model")
 	root.Flags().Float64Var(&minAppropriate, "min-appropriate", 0.85, "minimum Jev probability that the command is an ordinary step (strict mode)")
-	root.Flags().Float64Var(&maxNeedsHuman, "max-needs-human", 0.20, "maximum Jev probability of a risk that should stay on screen")
+	root.Flags().Float64Var(&maxNeedsHuman, "max-needs-human", 0.20, "maximum Jev probability that a person should decide (strict mode)")
+	root.Flags().Float64Var(&maxRisk, "max-risk", 0.50, "maximum Jev probability of each held risk before the card stays on screen (loose mode)")
 	root.Flags().IntVar(&maxJudges, "max-judges-per-minute", gate.DefaultMaxJudgesPerMinute, "cap on TypeSafe requests per minute across all panes")
 	root.AddCommand(a.versionCmd())
 	return root

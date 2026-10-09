@@ -19,7 +19,7 @@ Requires Go 1.25+ and a running Herdr server.
 ```text
 gate [--dry-run] [--loose] [--notify] [--ignore TARGET]...
      [--model jev-latest]
-     [--min-appropriate 0.85] [--max-needs-human 0.20]
+     [--min-appropriate 0.85] [--max-needs-human 0.20] [--max-risk 0.50]
      [--max-judges-per-minute 30]
      [--socket PATH] [--session NAME] [--json] [--quiet]
 gate version
@@ -27,7 +27,7 @@ gate version
 
 By default, allow once is pressed only when the invocation is an ordinary step of the work on screen (probability at least 0.85) and a person is unlikely to be needed (at most 0.20). Always-allow, "don't ask again", and open questions stay on screen. `git push`, deploys, and `rm -rf` stay with you even when that is what the agent was asked to do.
 
-`--loose` allows almost every single invocation, including work that is off the visible task: edits, tests, installs, commits, and pushes. The card stays on screen when the command would read or expose a secret, delete or destroy something outside the agent's worktree (this session's temp, cache, and session files excepted), or apply or destroy infrastructure (`terraform apply`, `terraform destroy`, and the same kind of command). If Jev cannot tell whether a command is in that set, the card stays up.
+`--loose` allows almost every single invocation, including work that is off the visible task: edits, tests, installs, commits, and pushes. The card stays on screen when the command would print, copy, or send a secret's value, delete or destroy something outside the agent's worktree (this session's temp, cache, and session files excepted), or apply or destroy infrastructure (`terraform apply`, `terraform destroy`, and the same kind of command). If Jev cannot tell whether a command is in that set, the card stays up. A CLI that signs in with its own stored credentials (`gh`, `git push`, `slackcli`, `aws`) is not a secret read. Each of the three risks holds the card when Jev scores it above `--max-risk` (default 0.50); `--max-needs-human` applies to strict mode only. The hold reason names the risk and its score.
 
 The only key `gate` sends is the single-shot allow. Held cards are left for you.
 
