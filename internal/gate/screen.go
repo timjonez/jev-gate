@@ -241,6 +241,11 @@ func proposedText(lines []string, firstOption int) string {
 	var kept []string
 	for i := firstOption - 1; i >= 0 && len(kept) < 8; i-- {
 		line := strings.TrimSpace(lines[i])
+		// A rule's width follows the terminal. Skipping it keeps the command
+		// in the prompt. Breaking here would drop the command above the rule.
+		if ruleLine(line) {
+			continue
+		}
 		if line == "" || chromeLine(line) {
 			if len(kept) > 0 {
 				break
@@ -271,8 +276,25 @@ func chromeLine(line string) bool {
 		strings.Contains(l, "permission prompt"):
 		return true
 	}
-	stripped := strings.Trim(l, "╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝ ▏")
-	return stripped == ""
+	return ruleLine(line)
+}
+
+// ruleLine is a box-drawing border. Claude draws these with ─ and ╌, and the
+// captured width changes when the pane is resized. The command is the prompt.
+func ruleLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	for _, r := range line {
+		if r == ' ' || r == '\t' {
+			continue
+		}
+		if r < 0x2500 || r > 0x259F {
+			return false
+		}
+	}
+	return true
 }
 
 // Tail keeps the last maxLines of screen, then the last maxRunes.

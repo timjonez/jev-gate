@@ -13,13 +13,14 @@ import (
 )
 
 type fakeClient struct {
-	mu     sync.Mutex
-	agents []herdrx.Agent
-	text   string
-	seq    []string
-	n      int
-	keys   [][]string
-	notes  []string
+	mu      sync.Mutex
+	agents  []herdrx.Agent
+	text    string
+	seq     []string
+	n       int
+	readErr error
+	keys    [][]string
+	notes   []string
 }
 
 func (f *fakeClient) Socket() string { return "/tmp/fake.sock" }
@@ -36,6 +37,9 @@ func (f *fakeClient) ListAgents(ctx context.Context) ([]herdrx.Agent, error) {
 func (f *fakeClient) ReadAgent(ctx context.Context, target, source string, lines int) (herdrx.Read, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return herdrx.Read{}, f.readErr
+	}
 	text := f.text
 	if len(f.seq) > 0 {
 		i := f.n
@@ -360,6 +364,118 @@ func cardFor(command string) string {
 		"Do you want to proceed?\n" +
 		"❯ 1. Yes\n" +
 		"  2. No\n"
+}
+
+func TestConsiderDoesNotRejudgeSameCardAfterScreenStabilizes(t *testing.T) {
+	fc := &fakeClient{text: churningCard(1)}
+	ans := allowAnswers()
+	ans.NeedsHuman = 0.9
+	j := &scriptJudge{ans: ans}
+	l, got := newLoop(fc, j)
+	a := blocked("worker")
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	// An identical frame used to drop the card id. The next change then
+	// looked like a new prompt.
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	fc.text = churningCard(2)
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	fc.text = churningCard(3)
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if j.calls != 1 {
+		t.Fatalf("judge calls %d, want 1", j.calls)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("decisions %+v", *got)
+	}
+}
+
+func TestConsiderDoesNotRejudgeWhenStatusFlickersWorking(t *testing.T) {
+	fc := &fakeClient{text: churningCard(1)}
+	ans := allowAnswers()
+	ans.NeedsHuman = 0.9
+	j := &scriptJudge{ans: ans}
+	l, _ := newLoop(fc, j)
+	a := blocked("worker")
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	a.Status = "working"
+	a.StateChangeSeq++
+	fc.text = churningCard(2)
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	a.Status = "blocked"
+	a.StateChangeSeq++
+	fc.text = churningCard(3)
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if j.calls != 1 {
+		t.Fatalf("judge calls %d, want 1", j.calls)
+	}
+}
+
+func TestConsiderKeepsCardWhenWorkingReadFails(t *testing.T) {
+	fc := &fakeClient{text: cardFor("go test ./...")}
+	ans := allowAnswers()
+	ans.NeedsHuman = 0.9
+	j := &scriptJudge{ans: ans}
+	l, _ := newLoop(fc, j)
+	a := blocked("worker")
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	fc.readErr = errors.New("herdr: unavailable")
+	a.Status = "working"
+	a.StateChangeSeq++
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	fc.readErr = nil
+	a.Status = "blocked"
+	a.StateChangeSeq++
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if j.calls != 1 {
+		t.Fatalf("judge calls %d, want 1", j.calls)
+	}
+}
+
+func TestConsiderRejudgesSameCommandAfterTheCardLeaves(t *testing.T) {
+	fc := &fakeClient{text: cardFor("go test ./...")}
+	ans := allowAnswers()
+	ans.NeedsHuman = 0.9
+	j := &scriptJudge{ans: ans}
+	l, _ := newLoop(fc, j)
+	a := blocked("worker")
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	fc.text = "Ready.\n"
+	a.Status = "working"
+	a.StateChangeSeq++
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	fc.text = cardFor("go test ./...")
+	a.Status = "blocked"
+	a.StateChangeSeq++
+	if err := l.consider(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if j.calls != 2 {
+		t.Fatalf("judge calls %d, want 2", j.calls)
+	}
 }
 
 func TestConsiderJudgesHeldCardOnceWhileScreenChurns(t *testing.T) {

@@ -1,6 +1,9 @@
 package gate
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseCard(t *testing.T) {
 	tests := []struct {
@@ -146,4 +149,40 @@ func repeat(s string, n int) string {
 		out += s
 	}
 	return out
+}
+
+func TestParseCardIgnoresRuleWidth(t *testing.T) {
+	command := `pec.containers[0].env[] | select(.name|test("PRISMA"))`
+	wide, okWide := ParseCard(ruledCard(180, command))
+	narrow, okNarrow := ParseCard(ruledCard(12, command))
+	other, okOther := ParseCard(ruledCard(180, "go test ./..."))
+	if !okWide || !okNarrow || !okOther {
+		t.Fatal("expected cards")
+	}
+	if wide.ID() != narrow.ID() {
+		t.Fatalf("rule width changed the prompt\n%q\n%q", wide.Proposed, narrow.Proposed)
+	}
+	if wide.ID() == other.ID() {
+		t.Fatal("different commands share an id")
+	}
+	if strings.Contains(wide.Proposed, "╌") || strings.Contains(narrow.Proposed, "╌") {
+		t.Fatalf("rule leaked into proposed %q", wide.Proposed)
+	}
+	if !strings.Contains(wide.Proposed, command) {
+		t.Fatalf("proposed lost the command %q", wide.Proposed)
+	}
+}
+
+func ruledCard(width int, command string) string {
+	rule := strings.Repeat("╌", width)
+	return "" +
+		"Bash command\n" +
+		"\n" +
+		"  " + command + "\n" +
+		rule + "\n" +
+		" Contains brace with quote character\n" +
+		"\n" +
+		"Do you want to proceed?\n" +
+		"❯ 1. Yes\n" +
+		"  2. No\n"
 }

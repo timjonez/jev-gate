@@ -293,7 +293,7 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 
 	prev, had := l.mem[a.PaneID]
 	if strings.EqualFold(a.Status, "working") || strings.TrimSpace(a.Status) == "" {
-		l.mem[a.PaneID] = memory{status: a.Status, seq: a.StateChangeSeq}
+		l.mem[a.PaneID] = l.memoryWhileAway(ctx, a, prev, had)
 		return nil
 	}
 	needSettle := !had || prev.status == "working" || prev.status == ""
@@ -319,7 +319,13 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 	hash := fingerprint(screen)
 	now := l.Opts.Now()
 	if had && prev.hash == hash && prev.settled {
-		l.mem[a.PaneID] = memory{status: a.Status, seq: a.StateChangeSeq, hash: hash, settled: true}
+		// The screen matched a judgment we already kept. Preserve the card id.
+		// Dropping it made the next change anywhere on the pane look like a
+		// new prompt, so one held card was sent to Jev again on every burst.
+		l.mem[a.PaneID] = memory{
+			status: a.Status, seq: a.StateChangeSeq,
+			hash: hash, card: prev.card, settled: true,
+		}
 		return nil
 	}
 	if had && prev.hash == hash && !prev.retryAt.IsZero() && now.Before(prev.retryAt) {
@@ -437,6 +443,30 @@ func (l *Loop) consider(ctx context.Context, a herdrx.Agent) error {
 
 	l.mem[a.PaneID] = memory{status: a.Status, seq: a.StateChangeSeq, hash: hash, card: cardID, settled: true}
 	return l.emit(ctx, base)
+}
+
+// memoryWhileAway keeps a settled card when the pane leaves blocked but that
+// same prompt is still on screen. A status flicker used to forget the card,
+// and the next blocked tick judged it again.
+func (l *Loop) memoryWhileAway(ctx context.Context, a herdrx.Agent, prev memory, had bool) memory {
+	base := memory{status: a.Status, seq: a.StateChangeSeq}
+	if !had || !prev.settled || prev.card == "" {
+		return base
+	}
+	screen, err := l.readScreen(ctx, a)
+	if err != nil {
+		base.hash = prev.hash
+		base.card = prev.card
+		base.settled = true
+		return base
+	}
+	if card, ok := ParseCard(screen); ok && card.ID() == prev.card {
+		base.hash = fingerprint(screen)
+		base.card = prev.card
+		base.settled = true
+		return base
+	}
+	return base
 }
 
 // takeJudgeBudget records a judge request at now, or reports false when the
