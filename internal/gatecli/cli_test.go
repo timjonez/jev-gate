@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,7 +68,7 @@ func newTestApp(t *testing.T) (*App, *bytes.Buffer, *bytes.Buffer) {
 	app.Stdout = &out
 	app.Stderr = &errb
 	app.now = func() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC) }
-	app.newClient = func(socket string) (herdrx.Client, error) { return stubClient{}, nil }
+	app.newClient = func(backend, socket string) (gate.Client, error) { return stubClient{}, nil }
 	return app, &out, &errb
 }
 
@@ -201,5 +204,81 @@ func TestMaxJudgesPerMinuteDefaultsAndRejectsZero(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "at least 1") {
 		t.Fatalf("stderr: %s", errb.String())
+	}
+}
+
+func TestResolveBackend(t *testing.T) {
+	for _, k := range []string{"HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_PANE_ID",
+		"HC_SOCKET", "HC_TERMINAL_SOCKET", "HC_SESSION", "HC_RUNTIME"} {
+		t.Setenv(k, "")
+	}
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "cfg"))
+	coreSock := filepath.Join(dir, "herdr-core", "default.sock")
+
+	resolve := func(app *App) (string, string) {
+		t.Helper()
+		b, s, err := app.resolveBackend()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b, s
+	}
+
+	// No core socket: fall back to the herdr server.
+	if b, s := resolve(&App{}); b != backendHerdr || s != filepath.Join(dir, "cfg", "herdr", "herdr.sock") {
+		t.Fatalf("fallback %s %s", b, s)
+	}
+
+	// A live core socket wins under auto.
+	if err := os.MkdirAll(filepath.Dir(coreSock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", coreSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if b, s := resolve(&App{}); b != backendCore || s != coreSock {
+		t.Fatalf("core %s %s", b, s)
+	}
+
+	// herdr server settings keep the herdr backend.
+	if b, _ := resolve(&App{Session: "work"}); b != backendHerdr {
+		t.Fatalf("session %s", b)
+	}
+	t.Setenv("HERDR_PANE_ID", "p1")
+	if b, _ := resolve(&App{}); b != backendHerdr {
+		t.Fatalf("herdr pane %s", b)
+	}
+	t.Setenv("HERDR_PANE_ID", "")
+
+	// Explicit sockets: a herdr-core folder means core, anything else herdr.
+	if b, _ := resolve(&App{Socket: "/run/user/1/herdr-core/x.sock"}); b != backendCore {
+		t.Fatalf("explicit core %s", b)
+	}
+	if b, _ := resolve(&App{Socket: "/tmp/herdr.sock"}); b != backendHerdr {
+		t.Fatalf("explicit herdr %s", b)
+	}
+	if b, s := resolve(&App{Backend: "core", Socket: "/tmp/odd.sock"}); b != backendCore || s != "/tmp/odd.sock" {
+		t.Fatalf("forced core %s %s", b, s)
+	}
+	if b, _ := resolve(&App{Backend: "herdr"}); b != backendHerdr {
+		t.Fatalf("forced herdr %s", b)
+	}
+	if _, _, err := (&App{Backend: "tmux"}).resolveBackend(); err == nil {
+		t.Fatal("bad backend accepted")
+	}
+}
+
+func TestSelfTerminalForCore(t *testing.T) {
+	t.Setenv("HC_TERMINAL_ID", "t18")
+	t.Setenv("HERDR_PANE_ID", "")
+	app := &App{Backend: "core", Socket: "/tmp/x.sock",
+		newClient: func(backend, socket string) (gate.Client, error) { return stubClient{}, nil }}
+	_, self, err := app.client()
+	if err != nil || self != "t18" {
+		t.Fatalf("self %q %v", self, err)
 	}
 }

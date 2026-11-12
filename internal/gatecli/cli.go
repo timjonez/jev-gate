@@ -7,17 +7,19 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/timjonez/gate/internal/gate"
+	"github.com/timjonez/gate/internal/hcx"
 	"github.com/timjonez/gate/internal/herdrx"
 )
 
 // Version is set at build time via -ldflags or defaults here.
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // App holds the gate command's process state.
 type App struct {
@@ -27,8 +29,9 @@ type App struct {
 	JSON    bool
 	Socket  string
 	Session string
+	Backend string
 
-	newClient func(socket string) (herdrx.Client, error)
+	newClient func(backend, socket string) (gate.Client, error)
 	newJudge  func() (gate.Judge, error)
 	runLoop   func(*gate.Loop) error
 	now       func() time.Time
@@ -38,13 +41,10 @@ type App struct {
 // NewApp constructs an App with process defaults.
 func NewApp() *App {
 	return &App{
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		now:    func() time.Time { return time.Now().UTC() },
-		newClient: func(socket string) (herdrx.Client, error) {
-			return herdrx.Dial(socket)
-		},
-		selfPane: os.Getenv("HERDR_PANE_ID"),
+		Stdout:    os.Stdout,
+		Stderr:    os.Stderr,
+		now:       func() time.Time { return time.Now().UTC() },
+		newClient: dialBackend,
 	}
 }
 
@@ -82,7 +82,7 @@ func (a *App) rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "gate",
 		Short: "Allow Herdr command prompts with TypeSafe Jev",
-		Long: `Watch every live Herdr agent. When a manual-mode session shows a tool permission card, ask TypeSafe Jev whether to press the single-shot allow.
+		Long: `Watch every live Herdr agent, in the Herdr desktop app (herdr-core) or the herdr server. When a manual-mode session shows a tool permission card, ask TypeSafe Jev whether to press the single-shot allow.
 
 By default, allow once only when that invocation is an ordinary step of the visible task. Publishing, broad deletion, spending, shared-system changes, and secret exposure stay on screen.
 
@@ -100,9 +100,12 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 			if maxJudges < 1 {
 				return fmt.Errorf("--max-judges-per-minute must be at least 1")
 			}
-			c, err := a.client()
+			c, self, err := a.client()
 			if err != nil {
 				return err
+			}
+			if a.selfPane != "" {
+				self = a.selfPane
 			}
 			j, err := a.judge(model)
 			if err != nil {
@@ -130,7 +133,7 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 				Judge:  j,
 				Opts: gate.Options{
 					Ignore:     ignore,
-					SelfPane:   a.selfPane,
+					SelfPane:   self,
 					DryRun:     dryRun,
 					NotifyHold: notify,
 					Mode:       mode,
@@ -166,8 +169,9 @@ Requires TYPESAFE_API_KEY or ~/.typesafe_key. --dry-run logs the judgment and do
 			return err
 		},
 	}
-	root.PersistentFlags().StringVar(&a.Socket, "socket", "", "Herdr Unix socket (default: HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock)")
-	root.PersistentFlags().StringVar(&a.Session, "session", "", "Herdr session name (default: HERDR_SESSION)")
+	root.PersistentFlags().StringVar(&a.Backend, "backend", backendAuto, "auto, core (Herdr desktop app / herdr-core), or herdr (herdr server)")
+	root.PersistentFlags().StringVar(&a.Socket, "socket", "", "socket path for the chosen backend (core: HC_SOCKET, HC_TERMINAL_SOCKET, or $XDG_RUNTIME_DIR/herdr-core/default.sock; herdr: HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock)")
+	root.PersistentFlags().StringVar(&a.Session, "session", "", "herdr server session name (default: HERDR_SESSION); implies --backend herdr under auto")
 	root.PersistentFlags().BoolVarP(&a.Quiet, "quiet", "q", false, "minimal human output")
 	root.PersistentFlags().BoolVar(&a.JSON, "json", false, "JSON output on stdout; errors as JSON on stderr")
 	root.Flags().StringArrayVar(&ignore, "ignore", nil, "pane id or agent name to skip (repeatable)")
@@ -197,10 +201,74 @@ func (a *App) versionCmd() *cobra.Command {
 	}
 }
 
-func (a *App) client() (herdrx.Client, error) {
-	socket := herdrx.ResolveSocket(a.Socket, a.Session)
-	if a.newClient != nil {
-		return a.newClient(socket)
+const (
+	backendAuto  = "auto"
+	backendCore  = "core"
+	backendHerdr = "herdr"
+)
+
+// client picks the backend, its socket, and the terminal gate runs in (so
+// gate never judges its own screen).
+func (a *App) client() (gate.Client, string, error) {
+	backend, socket, err := a.resolveBackend()
+	if err != nil {
+		return nil, "", err
+	}
+	self := os.Getenv("HERDR_PANE_ID")
+	if backend == backendCore {
+		self = os.Getenv("HC_TERMINAL_ID")
+	}
+	dial := a.newClient
+	if dial == nil {
+		dial = dialBackend
+	}
+	c, err := dial(backend, socket)
+	return c, self, err
+}
+
+// resolveBackend chooses between herdr-core (the Herdr desktop app) and the
+// herdr server. Under auto, herdr server settings (--session, HERDR_SESSION,
+// HERDR_SOCKET_PATH, or running inside a herdr pane) pick herdr; otherwise a
+// reachable herdr-core socket picks core, and herdr is the fallback. An
+// explicit --socket under auto is core only when it sits in a herdr-core
+// folder; use --backend core for any other core socket path.
+func (a *App) resolveBackend() (string, string, error) {
+	switch a.Backend {
+	case backendCore:
+		s := hcx.ResolveSocket(a.Socket)
+		if s == "" {
+			return "", "", fmt.Errorf("cannot find the herdr-core socket; pass --socket")
+		}
+		return backendCore, s, nil
+	case backendHerdr:
+		return backendHerdr, herdrx.ResolveSocket(a.Socket, a.Session), nil
+	case backendAuto, "":
+	default:
+		return "", "", fmt.Errorf("--backend must be auto, core, or herdr")
+	}
+	herdrEnv := a.Session != ""
+	for _, env := range []string{"HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_PANE_ID"} {
+		if os.Getenv(env) != "" {
+			herdrEnv = true
+		}
+	}
+	if a.Socket != "" {
+		if !herdrEnv && filepath.Base(filepath.Dir(a.Socket)) == "herdr-core" {
+			return backendCore, a.Socket, nil
+		}
+		return backendHerdr, a.Socket, nil
+	}
+	if !herdrEnv {
+		if s := hcx.ResolveSocket(""); hcx.Available(s) {
+			return backendCore, s, nil
+		}
+	}
+	return backendHerdr, herdrx.ResolveSocket("", a.Session), nil
+}
+
+func dialBackend(backend, socket string) (gate.Client, error) {
+	if backend == backendCore {
+		return hcx.Dial(socket)
 	}
 	return herdrx.Dial(socket)
 }
