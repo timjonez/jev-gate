@@ -34,6 +34,17 @@ type Options struct {
 // DefaultMaxJudgesPerMinute is well above a busy herd's real card rate.
 const DefaultMaxJudgesPerMinute = 30
 
+// Client is what the loop needs from a terminal host: the older herdr
+// server (herdrx) or herdr-core behind the Herdr desktop app (hcx).
+type Client interface {
+	ListAgents(ctx context.Context) ([]herdrx.Agent, error)
+	ReadAgent(ctx context.Context, target, source string, lines int) (herdrx.Read, error)
+	Notify(ctx context.Context, title, body, sound string) (herdrx.Notification, error)
+	SendKeys(ctx context.Context, target string, keys []string) error
+	Subscribe(ctx context.Context, subs []herdrx.Subscription, handle func(herdrx.Event) error) error
+	Socket() string
+}
+
 // Decision is one judged card, or a blocked screen that is not a command card.
 type Decision struct {
 	Action         string  `json:"action"`
@@ -59,7 +70,7 @@ type Decision struct {
 // Loop watches Herdr agents and presses a single-shot allow when the judgment
 // says to. It never presses a refusal.
 type Loop struct {
-	Client herdrx.Client
+	Client Client
 	Judge  Judge
 	Opts   Options
 	Status func(string)
